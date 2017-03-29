@@ -5,5 +5,8 @@
   "main": "app.js",
   "author": {
     "name": "Jhett Black"
+  },
+  "dependencies": {
+    "oracledb": "^1.13.0"
   }
 }
