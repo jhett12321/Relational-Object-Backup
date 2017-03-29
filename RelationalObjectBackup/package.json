@@ -7,6 +7,8 @@
     "name": "Jhett Black"
   },
   "dependencies": {
+    "async": "^2.2.0",
+    "jsonfile": "^2.4.0",
     "oracledb": "^1.13.0"
   }
 }
