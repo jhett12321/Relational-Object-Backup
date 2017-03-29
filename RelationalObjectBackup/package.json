@@ -1,0 +1,9 @@
+{
+  "name": "relational-object-backup",
+  "version": "0.0.0",
+  "description": "Exports, and imports relational objects from Oracle databases.",
+  "main": "app.js",
+  "author": {
+    "name": "Jhett Black"
+  }
+}
