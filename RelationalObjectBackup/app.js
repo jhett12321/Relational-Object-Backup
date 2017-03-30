@@ -16,19 +16,20 @@ oracledb.getConnection({
     if (err)
     {
         Error(err.message);
-        return;
     }
-
-    // We successfully connected. Lets start Export/Import.
-    db = connection;
-
-    if (config.exportData)
+    else
     {
-        Export();
-    }
-    else if (config.importData)
-    {
-        Import();
+        // We successfully connected. Lets start Export/Import.
+        db = connection;
+
+        if (Config.exportData)
+        {
+            Export();
+        }
+        else if (Config.importData)
+        {
+            Import();
+        }
     }
 });
 
@@ -46,68 +47,63 @@ function Export()
     // Initial query - resolve data from base table;
     console.log("Querying table ");
 
-    QueryTable(Config.baseTable, function (data)
-    {
+    QueryTable(Config.baseTable, function (data) {
         exportObj.baseTable[Config.baseTable] = data;
 
         // Since we succeeded with our first query, we now move on to all related tables.
-        // This is done in order to ensure we do not break table constraints when we re-import.
+        // This is done in a series to ensure we do not break table constraints when we re-import.
         async.eachSeries(Config.relatedTables, function (tableName, callback) {
-            QueryTable(tableName, function (data) {
+            QueryTable(tableName, function (err, data) {
                 exportObj.relatedTables[tableName] = data;
-                callback();
+                callback(err);
             });
         }, function (err) {
             if (err)
             {
                 Error(err.message);
-                return;
             }
-
-            ExportToFile(exportObj);
+            else
+            {
+                ExportToFile(exportObj);
+            }
         });
     });
 }
 
 function QueryTable(tableName, cb)
 {
-    var query = "SELECT * FROM :table_name" + TryAppendFlashback() + " WHERE :related_field = :related_value";
-    var params =
-    {
-        table_name: tableName,
-        related_field: Config.relatedField,
-        related_value: Config.relatedValue,
-        flashback_time: Config.flashbackTime
-    }
-
+    // Build our query
+    var query = "SELECT * FROM " + Config.schema + "." + tableName + TryAppendFlashback() + " WHERE " + Config.relatedField + " = " + Config.relateFieldValue;
     console.log("Executing query: " + query);
-    console.log("Bindings: " + params);
 
-    db.execute(query, params, function (err, result)
+    // Execute the query, and callback with results to be added to the working object.
+    db.execute(query, function (err, result)
     {
         if (err)
         {
             console.log("Query Failed!");
-            Error(err.message);
+            cb(err);
         }
         else
         {
             console.log("Query Completed Successfully.");
-            cb(result.rows);
+            cb(err, result.rows);
         }
     });
 }
 
+// Returns the flashback statement to be appended to a select, if we are configured to do so.
 function TryAppendFlashback()
 {
     if (!Config.isBackupDB && Config.flashbackAvailable)
     {
-        return " AS OF TIMESTAMP TO_TIMESTAMP(:flashback_time, 'YYYY-MM-DD HH:MI:SS')";
+        return " AS OF TIMESTAMP TO_TIMESTAMP('" + Config.flashbackTime + "', 'YYYY-MM-DD HH:MI:SS')";
     }
 
     return "";
 }
 
+// Exports the given object to the configured file.
 function ExportToFile(exportObj)
 {
     jsonfile.writeFile(Config.dataFile, exportObj, { spaces: 4 }, function (err)
@@ -117,29 +113,52 @@ function ExportToFile(exportObj)
             console.log("Writing to JSON File failed!");
             Error(err);
         }
+        else
+        {
+            ExitSuccessful();
+        }
     });
 }
 
 function Import()
 {
-    console.log("Importing relational data...");
+    console.log("Starting import of relational data...");
 
     // Load the JSON file into an object.
     jsonfile.readFile(Config.dataFile, function (err, importObj)
     {
-        UpdateTables(importObj.baseTable);
+        // Load the base table
+        UpdateTables(importObj.baseTable, function()
+        {
+            // Load related tables.
+            UpdateTables(importObj.relatedTables, function()
+            {
+                console.log("Committing changes...");
+
+                db.commit(function(err)
+                {
+                    if (err)
+                    {
+                        Error(err.message);
+                    }
+                    else
+                    {
+                        ExitSuccessful();
+                    }
+                });
+
+
+            });
+        });
     });
 }
 
-function UpdateTables(tablesObj)
+function UpdateTables(tablesObj, cb)
 {
-    // Start by attempting to insert base table data.
+    // To ensure we do not break cross-table constraints, we execute the insert statements in a series.
     async.eachOfSeries(tablesObj, function (rows, tableName, callback) {
         InsertData(tableName, rows, function (err) {
-            if (err)
-            {
-                callback(err.message);
-            }
+            callback(err);
         });
     }, function(err)
     {
@@ -148,6 +167,8 @@ function UpdateTables(tablesObj)
             Error(err.message);
             return;
         }
+
+        cb();
     });
 }
 
@@ -156,49 +177,84 @@ function InsertData(tableName, rows, cb)
     // Since we succeeded with our first query, we now move on to all related tables.
     // This is done in order to ensure we do not break table constraints when we re-import.
     async.eachSeries(rows, function (row, callback) {
-        var query = "INSERT INTO :table_name VALUES (";
+        var query = "INSERT INTO " + Config.schema + "." + tableName + " VALUES (";
 
+        // Add a bindable parameter for each column in this row.
         for (var i = 0; i < row.length; i++)
         {
-            query += ":" + i + " ";
+            query += ":" + i + ", ";
         }
 
-        query += ")";
-        var params = Object.values(row);
+        // Remove the trailing space and comma.
+        query = query.slice(0, -2);
 
-        console.log("Executing query: " + query);
+        query += ")";
+
+        // Make an array of the parameters we will pass in for binding.
+        var params = [];
+
+        for (var column in row)
+        {
+            if (row.hasOwnProperty(column))
+            {
+                params.push(row[column]);
+            }
+        }
+
+        // Now that we have built the query, and value parameters, bind & execute it.
+        // These changes are not committed immediately, so we can rollback if we run into an error.
+        console.log("\nExecuting query: " + query);
         console.log("Bindings: " + params);
 
         db.execute(query, params, function (err, result) {
-            callback(err);
+            if (err)
+            {
+                console.log("Query Failed!");
+                Error(err.message);
+            }
+            else
+            {
+                console.log("Query Completed Successfully.");
+                callback();
+            }
         });
     }, function (err) {
-        if (err)
-        {
-            console.log("Query Failed!");
-            Error(err.message);
-        }
-        else
-        {
-            console.log("Query Completed Successfully.");
-            cb();
-        }
+        cb();
     });
 }
 
 function Error(message)
 {
+    console.error("DB Operations failed:");
     console.error(message);
+
+    if (Config.importData)
+    {
+        console.error("No changes have been committed.");
+    }
+
     CloseConnection();
-    process.exit(1);
 }
 
-function CloseConnection()
+function ExitSuccessful()
+{
+    console.log("DB Operations completed successfully!");
+    CloseConnection();
+}
+
+// Closes our DB connection, and prompts the user to exit.
+function CloseConnection(exitCode)
 {
     db.close(function (err) {
         if (err)
         {
             console.error(err.message);
         }
+
+        console.log('Press [Enter] to exit...');
+
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', process.exit.bind(process, 0));
     });
 }
