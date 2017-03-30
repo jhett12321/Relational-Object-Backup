@@ -33,6 +33,7 @@
     <Compile Include="config.js">
       <SubType>Code</SubType>
     </Compile>
+    <Content Include=".gitignore" />
     <Content Include="package.json" />
     <Content Include="README.MD" />
   </ItemGroup>

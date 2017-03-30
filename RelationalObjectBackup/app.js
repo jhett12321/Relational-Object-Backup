@@ -6,7 +6,6 @@ var jsonfile = require('jsonfile');
 var Config = require('./config.js');
 
 // Database Connect
-oracledb.outFormat = oracledb.OBJECT; // Makes it easier to import later at the cost of a larger file size.
 var db;
 
 oracledb.getConnection({
@@ -29,7 +28,7 @@ oracledb.getConnection({
     }
     else if (config.importData)
     {
-        // Import();
+        Import();
     }
 });
 
@@ -117,6 +116,72 @@ function ExportToFile(exportObj)
         {
             console.log("Writing to JSON File failed!");
             Error(err);
+        }
+    });
+}
+
+function Import()
+{
+    console.log("Importing relational data...");
+
+    // Load the JSON file into an object.
+    jsonfile.readFile(Config.dataFile, function (err, importObj)
+    {
+        UpdateTables(importObj.baseTable);
+    });
+}
+
+function UpdateTables(tablesObj)
+{
+    // Start by attempting to insert base table data.
+    async.eachOfSeries(tablesObj, function (rows, tableName, callback) {
+        InsertData(tableName, rows, function (err) {
+            if (err)
+            {
+                callback(err.message);
+            }
+        });
+    }, function(err)
+    {
+        if (err)
+        {
+            Error(err.message);
+            return;
+        }
+    });
+}
+
+function InsertData(tableName, rows, cb)
+{
+    // Since we succeeded with our first query, we now move on to all related tables.
+    // This is done in order to ensure we do not break table constraints when we re-import.
+    async.eachSeries(rows, function (row, callback) {
+        var query = "INSERT INTO :table_name VALUES (";
+
+        for (var i = 0; i < row.length; i++)
+        {
+            query += ":" + i + " ";
+        }
+
+        query += ")";
+        var params = Object.values(row);
+
+        console.log("Executing query: " + query);
+        console.log("Bindings: " + params);
+
+        db.execute(query, params, function (err, result) {
+            callback(err);
+        });
+    }, function (err) {
+        if (err)
+        {
+            console.log("Query Failed!");
+            Error(err.message);
+        }
+        else
+        {
+            console.log("Query Completed Successfully.");
+            cb();
         }
     });
 }
